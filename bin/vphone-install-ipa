@@ -1,0 +1,138 @@
+#!/bin/zsh
+# vphone-install-ipa — install a DECRYPTED .ipa onto a running vphone guest.
+#
+#   vphone-install-ipa <app.ipa> [machine]
+#
+# Re-signs every nested bundle ad-hoc (the only signature state the patched
+# install gate accepts), repacks, installs through installd with
+# ideviceinstaller, then launches the app and confirms it is frontmost.
+#
+# Needs: vphone-launchpad-cli, ideviceinstaller (brew install ideviceinstaller).
+
+set -euo pipefail
+
+CLI=${VPHONE_CLI:-vphone-launchpad-cli}
+die() { print -u2 "error: $*"; exit 1; }
+say() { print -- "  $*"; }
+step() { print -- "\n\033[1;36m==>\033[0m \033[1m$*\033[0m"; }
+
+[[ $# -ge 1 ]] || die "usage: vphone-install-ipa <app.ipa> [machine]"
+IPA=${1:A}
+MACHINE=${2:-}
+[[ -f $IPA ]] || die "no such file: $IPA"
+command -v "$CLI" >/dev/null || die "$CLI not on PATH"
+command -v ideviceinstaller >/dev/null || die "ideviceinstaller missing — brew install ideviceinstaller"
+
+# ---- pick the machine -------------------------------------------------------
+step "Finding a running guest"
+vms=$("$CLI" vm list 2>/dev/null) || die "could not reach Launchpad"
+if [[ -z $MACHINE ]]; then
+  MACHINE=$(print -r -- "$vms" | python3 -c '
+import json,sys
+vms=[v for v in json.load(sys.stdin) if v.get("state")=="running"]
+if not vms: sys.exit("no running machine — start one with: vphone-launchpad-cli vm start <name>")
+if len(vms)>1: sys.exit("several running: "+", ".join(v["name"] for v in vms)+" — pass one as the 2nd argument")
+print(vms[0]["name"])') || die "$MACHINE"
+fi
+UDID=$(print -r -- "$vms" | python3 -c '
+import json,sys
+name=sys.argv[1]
+for v in json.load(sys.stdin):
+    if v["name"]==name:
+        if v.get("state")!="running": sys.exit(f"{name} is not running")
+        print(v["udid"]); break
+else: sys.exit(f"no machine named {name}")' "$MACHINE") || die "$UDID"
+say "machine $MACHINE   udid $UDID"
+
+# ---- unpack -----------------------------------------------------------------
+WORK=$(mktemp -d "${TMPDIR:-/tmp}/vphone-ipa.XXXXXX")
+trap 'rm -rf "$WORK"' EXIT
+step "Unpacking"
+ditto -x -k "$IPA" "$WORK/x" 2>/dev/null || unzip -q "$IPA" -d "$WORK/x"
+APP=("$WORK"/x/Payload/*.app(N))
+(( $#APP )) || die "no Payload/*.app inside the ipa"
+APP=${APP[1]}
+BID=$(/usr/libexec/PlistBuddy -c 'Print CFBundleIdentifier' "$APP/Info.plist")
+VER=$(/usr/libexec/PlistBuddy -c 'Print CFBundleShortVersionString' "$APP/Info.plist" 2>/dev/null || echo '?')
+say "$(basename "$APP")  $BID  $VER"
+
+# ---- refuse an encrypted binary ---------------------------------------------
+step "Checking the binary is decrypted"
+EXE=$(/usr/libexec/PlistBuddy -c 'Print CFBundleExecutable' "$APP/Info.plist")
+cryptid=$(otool -l "$APP/$EXE" 2>/dev/null | awk '/cryptid/{print $2; exit}')
+if [[ ${cryptid:-0} != 0 ]]; then
+  die "still FairPlay-encrypted (cryptid=$cryptid).
+       An App Store download will install but never launch. Use a decrypted dump."
+fi
+say "cryptid 0 — decrypted"
+
+# ---- re-sign ad-hoc, deepest first ------------------------------------------
+# Every nested bundle carries its own signature and the parent hashes its
+# children, so children must be signed before their parent. Extensions live in
+# PlugIns/ AND Extensions/ (and elsewhere), so enumerate rather than guess.
+step "Re-signing ad-hoc"
+ENT=$WORK/ent; mkdir -p "$ENT"
+SKIPPED=()
+resign() {
+  local b=$1 e="$ENT/$(print -r -- "$b" | md5 -q).plist"
+  # Each nested bundle keeps its own entitlements; ad-hoc signing drops them
+  # unless they are passed back in explicitly.
+  if codesign -d --entitlements :- --xml "$b" >"$e" 2>/dev/null && [[ -s $e ]]; then
+    codesign -f -s - --entitlements "$e" "$b" >/dev/null 2>&1 || SKIPPED+=("$b")
+  else
+    codesign -f -s - "$b" >/dev/null 2>&1 || SKIPPED+=("$b")
+  fi
+  return 0
+}
+# deepest path first, so a child is always signed before its parent
+nested=()
+while IFS= read -r b; do nested+=("$b"); done < <(
+  find "$APP" \( -name '*.appex' -o -name '*.framework' -o -name '*.bundle' -o -name '*.dylib' \) -print \
+    | awk -F/ '{print NF"\t"$0}' | sort -rn | cut -f2-
+)
+for b in "${nested[@]}"; do resign "$b"; done
+say "${#nested[@]} nested bundles"
+(( ${#SKIPPED[@]} )) && say "could not sign ${#SKIPPED[@]} (usually resource-only bundles, harmless)"
+resign "$APP"
+flags=$(codesign -dv "$APP" 2>&1 | grep -o 'flags=0x[0-9a-f]*([a-z]*)' | head -1)
+[[ $flags == *adhoc* ]] || die "app did not end up ad-hoc signed ($flags)"
+codesign --verify --deep --strict "$APP" 2>/dev/null || die "deep signature verification failed"
+say "$flags, deep verify ok"
+
+# ---- repack and install ------------------------------------------------------
+step "Repacking"
+OUT=$WORK/resigned.ipa
+( cd "$WORK/x" && zip -qry "$OUT" Payload )
+say "$(du -h "$OUT" | cut -f1)"
+
+step "Installing through installd"
+set +e
+ideviceinstaller -u "$UDID" install "$OUT" >"$WORK/log" 2>&1
+set -e
+# ideviceinstaller redraws progress with \r when stdout is not a tty
+tr '\r' '\n' < "$WORK/log" > "$WORK/log.txt"; mv "$WORK/log.txt" "$WORK/log"
+grep -E 'Install: (VerifyingApplication|InstallingApplication|Complete)|ERROR' "$WORK/log" | sed 's/^/  /' || true
+if grep -q 0xe8008019 "$WORK/log"; then
+  die "installd rejected a signature (0xE8008019). The offending bundle is named above;
+       it was likely missed by the re-sign pass — report it so the script can cover it."
+fi
+grep -q 'Install: Complete' "$WORK/log" || die "install did not complete — see output above"
+
+# ---- launch and confirm ------------------------------------------------------
+step "Launching"
+"$CLI" guest unlock "$MACHINE" >/dev/null 2>&1 || true
+"$CLI" guest rpc "$MACHINE" apps.launch "{\"bundle_id\":\"$BID\"}" >/dev/null 2>&1 \
+  || die "installed, but apps.launch failed"
+sleep 8
+front=$("$CLI" guest rpc "$MACHINE" apps.foreground 2>/dev/null | python3 -c \
+  'import json,sys; print(json.load(sys.stdin)["result"].get("bundle_id",""))' 2>/dev/null || true)
+SHOT=${TMPDIR:-/tmp}/vphone-$BID.png
+"$CLI" guest send "$MACHINE" "{\"t\":\"screenshot\",\"path\":\"$SHOT\",\"screen\":false}" >/dev/null 2>&1 || true
+
+if [[ $front == "$BID" ]]; then
+  print -- "\n\033[1;32m✓ $BID $VER is installed and running on $MACHINE\033[0m"
+else
+  print -- "\n\033[1;33m! installed, but $BID is not frontmost (got: ${front:-none})\033[0m"
+  print -- "  it may still be starting; check the screenshot"
+fi
+[[ -f $SHOT ]] && print -- "  screenshot: $SHOT"

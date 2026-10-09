@@ -1,0 +1,5 @@
+# /etc/master.passwd lives on the sealed read-only system volume, so root's
+# login shell cannot be changed there. Hand off to zsh for interactive logins.
+case $- in
+  *i*) [ -z "$ZSH_VERSION" ] && [ -x /usr/bin/zsh ] && exec /usr/bin/zsh -l ;;
+esac
