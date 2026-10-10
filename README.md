@@ -98,5 +98,8 @@ read-only volume), so `.profile` execs zsh for interactive logins only.
 fresh guest key-based root ssh and a working `frida-server` (repacking frida's
 `/var/jb` deb for roothide, the kernel patches attach needs).
 
+Already have a configured guest? [docs/importing-a-ready-guest.md](docs/importing-a-ready-guest.md)
+moves it to another Mac as one archive, so the new host skips `vm create`.
+
 See [CLAUDE.md](CLAUDE.md) for why each step exists and the failure each one
 prevents.
