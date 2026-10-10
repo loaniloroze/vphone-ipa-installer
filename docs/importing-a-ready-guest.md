@@ -4,12 +4,22 @@ A guest that already has root ssh, the roothide bootstrap, frida-server and the
 installer's prerequisites can be moved to another Mac as a single archive, so
 the target host never runs `vm create`.
 
-## The file
+## The files
 
 ```
-~/pcc-research-01.tzst          # 11G, zstd
+~/pcc-research-02.tzst          # 9.7G, zstd -- iOS 26.5, bundle 2.9.2
+~/pcc-research-02.tzst.sha256   # checksum
+~/pcc-research-01.tzst          # 11G, zstd  -- iOS 27.0.1, bundle 2.9.0
 ~/pcc-research-01.tzst.sha256   # checksum
+
+~/vphone-bundle-2.9.2.zip       # 16M, the Core Bundle 2.9.2 itself
+~/vphone-bundle-2.9.2.zip.sha256
 ```
+
+The archive carries the machine; it does **not** carry the Core Bundle the
+machine is bound to. A target Mac with no internet cannot
+`bundle install-release`, so the bundle has to travel too — see
+[Offline targets](#offline-targets).
 
 Contains the whole machine directory: `Disk.img`, `SEPStorage`, `nvram.bin`,
 `config.plist`, the boot ROMs and the patch records. The IPSW
@@ -46,12 +56,44 @@ host only.
 ## Using one
 
 ```sh
-vphone-launchpad-cli bundle install-release 2.9.0     # must match the source's bundle
-shasum -a 256 -c pcc-research-01.tzst.sha256
-vphone-launchpad-cli exec vm import ~/pcc-research-01.tzst
-vphone-launchpad-cli vm start pcc-research-01 --wait
+vphone-launchpad-cli bundle install-release 2.9.2     # must match the source's bundle
+shasum -a 256 -c pcc-research-02.tzst.sha256
+vphone-launchpad-cli exec vm import ~/pcc-research-02.tzst
+vphone-launchpad-cli vm start pcc-research-02 --wait
 vphone-launchpad-cli vm leases                        # the guest's new IP
 ```
+
+`pcc-research-01` is on bundle **2.9.0**, `pcc-research-02` on **2.9.2**;
+install the one that matches the archive you are importing.
+
+## Offline targets
+
+`bundle install-release` downloads from GitHub, so on a Mac with no network the
+bundle must be carried over as a directory. **Copy it into place rather than
+using `bundle install-local`:** install-local deliberately renames what it
+installs to `<version>-local.<hash>`, which no longer matches the `2.9.2` the
+imported machine is bound to.
+
+```sh
+sudo mkdir -p "/Library/Application Support/vphone-launchpad/Bundles/2.9.2"
+sudo ditto -xk vphone-bundle-2.9.2.zip \
+  "/Library/Application Support/vphone-launchpad/Bundles/2.9.2/"
+vphone-launchpad-cli bundle verify 2.9.2      # policy exception + host preflight
+vphone-launchpad-cli bundle list              # expect policy/preflight: passed
+```
+
+If you did use `install-local`, rebind the machine instead of renaming
+anything:
+
+```sh
+vphone-launchpad-cli vm set-bundle pcc-research-02 2.9.2-local.<hash> --update-environment
+```
+
+Everything else the guest needs is already inside the archive. In particular
+the roothide bootstrap, `openssh-server`, the authorized key, the zsh setup and
+frida-server live on `Disk.img`, and the `kernel-exp-frida_*` patches are part
+of the boot chain — the target never contacts `apt.owngoal.dev`, GitHub or
+Apple.
 
 Then `ssh root@<new-ip>` — the authorized key is on the guest's disk, so it
 works immediately. frida-server comes up from its LaunchDaemon.
@@ -63,7 +105,8 @@ works immediately. frida-server comes up from its LaunchDaemon.
 - **Host trust.** `ideviceinstaller` (and so `vphone-install-ipa`) needs the new
   Mac to be a trusted host for the guest's lockdownd; the UDID itself is kept.
 - **Bundle version.** The machine is bound to the Core Bundle it was created
-  with. Install that version on the target first.
+  with (2.9.2 for `pcc-research-02`, 2.9.0 for `pcc-research-01`). Install that
+  exact version on the target first.
 - **Kernel patches** are part of the boot chain in the archive, so the frida
   `kernel-exp-frida_*` patches survive. No `fw set-patches` / `update-kernel`
   needed.
