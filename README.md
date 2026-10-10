@@ -92,5 +92,11 @@ scp guest-profile root@<guest-ip>:/var/root/.profile
 Root's login shell can't be changed (`/etc/master.passwd` is on the sealed
 read-only volume), so `.profile` execs zsh for interactive logins only.
 
+## Guest setup from scratch
+
+[docs/ssh-and-frida-setup.md](docs/ssh-and-frida-setup.md) walks through giving a
+fresh guest key-based root ssh and a working `frida-server` (repacking frida's
+`/var/jb` deb for roothide, the kernel patches attach needs).
+
 See [CLAUDE.md](CLAUDE.md) for why each step exists and the failure each one
 prevents.
