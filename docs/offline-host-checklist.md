@@ -31,16 +31,26 @@ Everything below is **host** side.
 
 ## 2. Files to carry
 
+Exactly two things are required:
+
 | File | Size | Why |
 | --- | --- | --- |
 | `pcc-research-02.tzst` | 9.7 G | **the snapshot** — the whole machine |
-| `pcc-research-02.tzst.sha256` | 101 B | the archive is big and silently truncatable; check it |
-| `vphone-launchpad.app` | 21 M | the host app, and the `vphone-launchpad-cli` inside it |
-| `VPhone.bundle` 2.9.2 | 86 M (16 M zipped) | the Core Bundle the machine is bound to |
-| `~/.vphone/gpu-drivers/26.4_23E5207q/` | 160 K | `AppleParavirtGPUMetalIOGPUFamily.bundle`, extracted from the cloudOS IPSW the offline host will not have |
+| `VPhone.bundle` 2.9.2 | 86 M (16 M zipped) | the Core Bundle the machine is bound to, and the only way to get it without a network |
 
-Only the first is the machine. The `.sha256` is a one-line text file, and the
-other three are the host software the target would otherwise download.
+Useful but optional:
+
+| File | Size | Why it is optional |
+| --- | --- | --- |
+| `vphone-launchpad.app` | 21 M | convenience. It supplies the GUI, the `vphone-launchpad-cli` wrapper and the privileged helper, but the bundle's own `VPhone.bundle/Contents/MacOS/vphone-cli` can `vm import` and `vm launch` on its own |
+| `pcc-research-02.tzst.sha256` | 101 B | one line of text. `vm export` can leave a truncated archive that still looks plausible, so it is worth copying |
+| `vphone-bundle-2.9.2.zip.sha256` | 101 B | same |
+
+**Not needed:** `~/.vphone/gpu-drivers/`. An earlier revision of this document
+listed it. Tested by moving the cache aside and restarting `pcc-research-02`:
+the guest boots, SpringBoard renders normally and ssh and frida-server come up.
+It is populated when a machine is *created* from a cloudOS IPSW, which an
+imported machine never does.
 
 Make the app and bundle copies on a Mac that already works:
 
@@ -49,7 +59,6 @@ ditto -c -k --sequesterRsrc --keepParent /Applications/vphone-launchpad.app ~/vp
 ditto -c -k --sequesterRsrc --keepParent \
   "/Library/Application Support/vphone-launchpad/Bundles/2.9.2/VPhone.bundle" \
   ~/vphone-bundle-2.9.2.zip
-ditto -c -k --keepParent ~/.vphone/gpu-drivers ~/vphone-gpu-drivers.zip
 ```
 
 Carry the Launchpad app as the **notarized** release zip if you have it;
@@ -82,10 +91,7 @@ sudo ditto -xk vphone-bundle-2.9.2.zip \
 vphone-launchpad-cli bundle verify 2.9.2
 vphone-launchpad-cli bundle list             # expect policy/preflight: passed
 
-# c. the GPU driver cache
-ditto -xk vphone-gpu-drivers.zip ~/.vphone/
-
-# d. the machine
+# c. the machine
 shasum -a 256 -c pcc-research-02.tzst.sha256
 vphone-launchpad-cli exec vm import ~/pcc-research-02.tzst
 vphone-launchpad-cli vm start pcc-research-02 --wait
