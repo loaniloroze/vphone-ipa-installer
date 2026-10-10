@@ -68,6 +68,10 @@ install the one that matches the archive you are importing.
 
 ## Offline targets
 
+A full inventory for a Mac with no network — host security settings, every file
+to carry, and the order to do it in — is in
+[offline-host-checklist.md](offline-host-checklist.md). The short version:
+
 `bundle install-release` downloads from GitHub, so on a Mac with no network the
 bundle must be carried over as a directory. **Copy it into place rather than
 using `bundle install-local`:** install-local deliberately renames what it
